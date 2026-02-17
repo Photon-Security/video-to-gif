@@ -34,6 +34,29 @@ Icon
 node_modules/
 .venv/
 
+# Electron / packaging outputs
+*.app/
+dist/
+out/
+release/
+
+# Rendered doc exports
+README.html
+README_files/
+
+# Local emulator artifacts (Azurite)
+AzuriteConfig
+__azurite*
+
+# Generated conversion outputs
+*-tiny.gif
+*-small.gif
+*-medium.gif
+palette-*.png
+
+# Test harness output
+temp/
+
 # macOS Finder Thumbnails
 ._*
 # macOS Quick Look
@@ -47,3 +70,6 @@ node_modules/
 # Swift Package Manager
 .build/
 .swiftpm/
+
+# Icon build intermediates
+AppIcon.iconset/
