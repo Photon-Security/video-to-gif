@@ -7,7 +7,7 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "preinstall": "node check-dependencies.js || exit 0",
+    "preinstall": "node check-dependencies.js",
     "postinstall": "chmod +x video2gif.rb"
   },
   "keywords": [],

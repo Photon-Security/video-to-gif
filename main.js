@@ -56,8 +56,12 @@ app.on('activate', () => {
 
 // Handle video to GIF conversion
 ipcMain.on('convert-video', (event, videoPath) => {
+  const scriptPath = path.join(__dirname, 'video2gif.rb');
+
   // Run the Ruby script to convert the video
-  const rubyProcess = spawn('ruby', ['video2gif.rb', videoPath]);
+  const rubyProcess = spawn('ruby', [scriptPath, videoPath], {
+    cwd: __dirname
+  });
   
   let stdoutData = '';
   let stderrData = '';
@@ -79,6 +83,13 @@ ipcMain.on('convert-video', (event, videoPath) => {
   rubyProcess.stderr.on('data', (data) => {
     stderrData += data.toString();
     event.sender.send('conversion-progress', { type: 'stderr', data: data.toString() });
+  });
+
+  rubyProcess.on('error', (error) => {
+    event.sender.send('conversion-complete', {
+      success: false,
+      error: `Failed to start Ruby conversion process: ${error.message}`
+    });
   });
   
   rubyProcess.on('close', (code) => {
@@ -130,7 +141,7 @@ ipcMain.on('convert-video', (event, videoPath) => {
     } else {
       event.sender.send('conversion-complete', {
         success: false,
-        error: stderrData || 'Conversion failed with code ' + code
+        error: sanitizeTerminalOutput(stderrData || stdoutData) || 'Conversion failed with code ' + code
       });
     }
   });
@@ -218,4 +229,8 @@ function extractMetadata(output) {
   }
   
   return metadata;
+}
+
+function sanitizeTerminalOutput(output) {
+  return output.replace(/\u001b\[[0-9;]*m/g, '').trim();
 }
