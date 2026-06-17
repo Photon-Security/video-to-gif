@@ -1,6 +1,6 @@
 {
   "name": "video-to-gif",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A Ruby script that converts any video file (MP4, MKV, AVI, MOV, WMV, etc.) to an optimized, lightweight GIF using FFmpeg.",
   "main": "main.js",
   "scripts": {
@@ -8,14 +8,97 @@
     "dev": "electron . --dev",
     "test": "echo \"Error: no test specified\" && exit 1",
     "preinstall": "node check-dependencies.js",
-    "postinstall": "chmod +x video2gif.rb"
+    "postinstall": "chmod +x video2gif.rb",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "pack": "electron-builder --dir"
   },
   "keywords": [],
-  "author": "",
+  "author": "Florian Bidabe / Photon Security",
   "license": "ISC",
   "dependencies": {
     "chalk": "^4.1.2",
-    "electron": "^36.4.0",
     "electron-reload": "^2.0.0-alpha.1"
+  },
+  "devDependencies": {
+    "electron": "^36.9.5",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.photonsec.video-to-gif",
+    "productName": "Video to GIF",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "assets/icons/**/*",
+      "!assets/media/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "video2gif.rb",
+        "to": "video2gif.rb"
+      },
+      {
+        "from": "config.json",
+        "to": "config.json"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "icon": "assets/icons/AppIcon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "fileAssociations": [
+        {
+          "ext": [
+            "mp4",
+            "mkv",
+            "avi",
+            "mov",
+            "wmv",
+            "flv",
+            "webm",
+            "m4v",
+            "3gp",
+            "mpg",
+            "mpeg"
+          ],
+          "name": "Video",
+          "role": "Viewer"
+        }
+      ]
+    },
+    "win": {
+      "icon": "assets/icons/app-icon.png",
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "icon": "assets/icons/app-icon.png",
+      "target": [
+        "AppImage"
+      ],
+      "category": "AudioVideo"
+    }
+  },
+  "allowScripts": {
+    "electron@36.9.5": true,
+    "fsevents@2.3.3": true
   }
 }
