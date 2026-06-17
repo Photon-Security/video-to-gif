@@ -134,9 +134,15 @@ class Video2Gif
   end
   
   def get_video_dimensions(video_path)
-    cmd = %Q(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "#{video_path}")
-    stdout, stderr, status = Open3.capture3(cmd)
-    
+    # argv-style invocation — no shell, no quoting hazards.
+    stdout, _stderr, status = Open3.capture3(
+      'ffprobe', '-v', 'error',
+      '-select_streams', 'v:0',
+      '-show_entries', 'stream=width,height',
+      '-of', 'csv=s=x:p=0',
+      video_path
+    )
+
     if status.success? && stdout.strip =~ /(\d+)x(\d+)/
       width, height = $1.to_i, $2.to_i
       return [width, height]
@@ -162,10 +168,10 @@ class Video2Gif
   def convert_to_gif(video_path)
     # Get video dimensions
     width, height = get_video_dimensions(video_path)
-    
+
     puts "\n🎬 Converting #{File.basename(video_path)} to multiple GIF versions..."
     puts "  • Original size: #{width}x#{height}" if width > 0
-    
+
     # Determine medium size based on original width
     medium_max_width = if width > 1980
                          1980
@@ -174,7 +180,7 @@ class Video2Gif
                        else
                          [1280, width].max  # Ensure medium is at least as large as small
                        end
-    
+
     # Create three versions of the GIF using config settings
     versions = [
       {
@@ -199,58 +205,29 @@ class Video2Gif
         dither_method: @version_settings['medium']['dither_method']
       }
     ]
-    
+
+    # Encode all three versions concurrently. ffmpeg is mostly I/O + SIMD,
+    # so on multi-core machines this gives a meaningful wall-clock win.
+    # stdout writes are serialised per-version (each thread buffers its block
+    # and dumps it under a mutex) so the renderer's line-based parser still
+    # sees coherent "Creating X version: ... • Size: ..." blocks.
+    output_mutex = Mutex.new
     results = []
-    
-    versions.each do |version|
-      output_path = video_path.sub(/\.[^.]+$/, "-#{version[:name]}.gif")
-      new_width, new_height = calculate_custom_dimensions(width, height, version[:max_width])
-      
-      puts "\n  Creating #{version[:name]} version:"
-      puts "  • Size: #{new_width}x#{new_height}"
-      puts "  • FPS: #{version[:fps]}"
-      puts "  • Color depth: #{version[:color_depth]} colors"
-      puts "  • Dither method: #{version[:dither_method]}"
-      
-      # Two-pass approach for better quality and smaller file size
-      # 1. Generate palette for better color quantization
-      palette_path = "#{File.dirname(video_path)}/palette-#{version[:name]}.png"
-      palette_cmd = %Q(ffmpeg -i "#{video_path}" -vf "fps=#{version[:fps]},scale=#{new_width}:#{new_height}:flags=lanczos,palettegen=max_colors=#{version[:color_depth]}" -y "#{palette_path}")
-      
-      # 2. Use the palette to create the GIF
-      gif_cmd = %Q(ffmpeg -i "#{video_path}" -i "#{palette_path}" -lavfi "fps=#{version[:fps]},scale=#{new_width}:#{new_height}:flags=lanczos [x]; [x][1:v] paletteuse=dither=#{version[:dither_method]}" -y "#{output_path}")
-      
-      # Execute commands
-      puts "  • Generating color palette..."
-      system(palette_cmd, out: File::NULL)
-      
-      puts "  • Creating optimized GIF..."
-      system(gif_cmd, out: File::NULL)
-      
-      # Clean up palette file
-      FileUtils.rm(palette_path) if File.exist?(palette_path)
-      
-      if File.exist?(output_path)
-        original_size = File.size(video_path)
-        gif_size = File.size(output_path)
-        size_reduction = ((original_size - gif_size) / original_size.to_f * 100).round(2)
-        
-        puts "  ✅ #{version[:name]} version complete!"
-        puts "    • Size: #{format_size(gif_size)} (#{size_reduction}% reduction)"
-        puts "    • Saved to: #{output_path}"
-        
-        results << {
-          "version" => version[:name],
-          "path" => output_path,
-          "size" => gif_size,
-          "dimensions" => "#{new_width}x#{new_height}",
-          "reduction" => size_reduction
-        }
-      else
-        puts "  ❌ Failed to create #{version[:name]} version"
+    results_mutex = Mutex.new
+
+    threads = versions.map do |version|
+      Thread.new do
+        encode_version(video_path, width, height, version, output_mutex).tap do |r|
+          results_mutex.synchronize { results << r } if r
+        end
       end
     end
-    
+    threads.each(&:join)
+
+    # Sort results back into canonical tiny → small → medium order.
+    order = { "tiny" => 0, "small" => 1, "medium" => 2 }
+    results.sort_by! { |r| order[r["version"]] || 99 }
+
     # Return results as a hash
     result_hash = {
       "original" => {
@@ -260,8 +237,69 @@ class Video2Gif
       },
       "versions" => results
     }
-    
+
     return result_hash
+  end
+
+  # Encode a single GIF version. Returns the result hash, or nil on failure.
+  # `output_mutex` serialises the per-version stdout block so the Electron
+  # renderer can match "Creating X version: ... • Size: ..." reliably even
+  # when threads race.
+  def encode_version(video_path, width, height, version, output_mutex)
+    output_path = video_path.sub(/\.[^.]+$/, "-#{version[:name]}.gif")
+    new_width, new_height = calculate_custom_dimensions(width, height, version[:max_width])
+    palette_path = "#{File.dirname(video_path)}/palette-#{version[:name]}.png"
+
+    # Build commands as arg arrays so no shell is involved and filenames with
+    # spaces, quotes, or `$()` can't break out into the shell.
+    palette_filter = "fps=#{version[:fps]},scale=#{new_width}:#{new_height}:flags=lanczos,palettegen=max_colors=#{version[:color_depth]}"
+    palette_cmd = ['ffmpeg', '-i', video_path, '-vf', palette_filter, '-y', palette_path]
+
+    gif_filter = "fps=#{version[:fps]},scale=#{new_width}:#{new_height}:flags=lanczos [x]; [x][1:v] paletteuse=dither=#{version[:dither_method]}"
+    gif_cmd = ['ffmpeg', '-i', video_path, '-i', palette_path, '-lavfi', gif_filter, '-y', output_path]
+
+    palette_ok = run_quiet(palette_cmd)
+    encode_ok = palette_ok && run_quiet(gif_cmd)
+    FileUtils.rm(palette_path) if File.exist?(palette_path)
+
+    output_mutex.synchronize do
+      puts "\n  Creating #{version[:name]} version:"
+      puts "  • Size: #{new_width}x#{new_height}"
+      puts "  • FPS: #{version[:fps]}"
+      puts "  • Color depth: #{version[:color_depth]} colors"
+      puts "  • Dither method: #{version[:dither_method]}"
+
+      if encode_ok && File.exist?(output_path)
+        original_size = File.size(video_path)
+        gif_size = File.size(output_path)
+        size_reduction = ((original_size - gif_size) / original_size.to_f * 100).round(2)
+
+        puts "  ✅ #{version[:name]} version complete!"
+        puts "    • Size: #{format_size(gif_size)} (#{size_reduction}% reduction)"
+        puts "    • Saved to: #{output_path}"
+        $stdout.flush
+
+        return {
+          "version" => version[:name],
+          "path" => output_path,
+          "size" => gif_size,
+          "dimensions" => "#{new_width}x#{new_height}",
+          "reduction" => size_reduction
+        }
+      else
+        puts "  ❌ Failed to create #{version[:name]} version"
+        $stdout.flush
+        return nil
+      end
+    end
+  end
+
+  # Run a command as an argv array (no shell) with stdout silenced.
+  # ffmpeg progress output stays on stderr, where the Electron main process
+  # parses it for duration / time progress updates.
+  def run_quiet(argv)
+    _stdout, _stderr, status = Open3.capture3(*argv, out: File::NULL)
+    status.success?
   end
   
   def calculate_custom_dimensions(width, height, max_width)
