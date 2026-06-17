@@ -1,7 +1,20 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
+const { pathToFileURL } = require('url');
 const fs = require('fs');
+
+const SUPPORTED_VIDEO_EXTS = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.mpg', '.mpeg'];
+const isVideoPath = (p) => typeof p === 'string' && SUPPORTED_VIDEO_EXTS.includes(path.extname(p).toLowerCase());
+const findVideoArg = (argv) => (argv || []).find(isVideoPath) || null;
+
+// Ensure only one instance of the app runs. Without this, double-clicking the
+// .app bundle or dragging a video onto it spawns a fresh process and a new
+// window every time.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+  return;
+}
 
 // Enable live reload for development
 if (process.argv.includes('--dev')) {
@@ -15,20 +28,49 @@ if (process.argv.includes('--dev')) {
 }
 
 let mainWindow;
+// Holds a file path the OS asked us to open before the window was ready.
+let pendingFileToOpen = findVideoArg(process.argv);
+// Currently-running Ruby conversion process, if any. Tracked so the renderer
+// can cancel it via IPC and so we can reject overlapping starts.
+let activeConversion = null;
+
+function deliverFile(filePath) {
+  if (!filePath) return;
+  if (mainWindow && !mainWindow.webContents.isLoading()) {
+    mainWindow.webContents.send('file-opened', filePath);
+  } else {
+    pendingFileToOpen = filePath;
+  }
+}
+
+function focusMainWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 900,
     height: 700,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-      enableRemoteModule: true
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      preload: path.join(__dirname, 'preload.js')
     },
     icon: path.join(__dirname, 'assets', 'icons', 'app-icon.png')
   });
 
   mainWindow.loadFile('src/index.html');
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (pendingFileToOpen) {
+      mainWindow.webContents.send('file-opened', pendingFileToOpen);
+      pendingFileToOpen = null;
+    }
+  });
 
   // Open DevTools in development mode
   if (process.argv.includes('--dev')) {
@@ -40,9 +82,47 @@ function createWindow() {
   });
 }
 
-app.on('ready', createWindow);
+// macOS: fired when the user drags a video onto the .app icon or uses
+// "Open With…". Must be registered before `ready`.
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  deliverFile(filePath);
+  focusMainWindow();
+});
+
+// Fires in the original (primary) instance when the user launches a second
+// copy of the app (e.g. by double-clicking the .app again or via `open` with
+// a file argument on Windows/Linux).
+app.on('second-instance', (event, argv) => {
+  focusMainWindow();
+  deliverFile(findVideoArg(argv));
+});
+
+app.on('ready', () => {
+  // macOS-only: BrowserWindow({icon}) is ignored on macOS — the dock icon
+  // normally comes from the .app bundle's Info.plist. In unpackaged dev mode
+  // we have no bundle, so set it explicitly via app.dock.
+  if (process.platform === 'darwin' && app.dock) {
+    try {
+      app.dock.setIcon(path.join(__dirname, 'assets', 'icons', 'app-icon.png'));
+    } catch (err) { /* non-fatal */ }
+  }
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
+  // Make sure no Ruby/ffmpeg child outlives the UI.
+  if (activeConversion) {
+    activeConversion.cancelled = true;
+    const pid = activeConversion.process.pid;
+    try {
+      if (process.platform === 'win32') {
+        spawn('taskkill', ['/pid', String(pid), '/f', '/t']);
+      } else {
+        process.kill(-pid, 'SIGTERM');
+      }
+    } catch (err) { /* already gone */ }
+  }
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -56,43 +136,94 @@ app.on('activate', () => {
 
 // Handle video to GIF conversion
 ipcMain.on('convert-video', (event, videoPath) => {
-  const scriptPath = path.join(__dirname, 'video2gif.rb');
+  if (activeConversion) {
+    event.sender.send('conversion-complete', {
+      success: false,
+      error: 'A conversion is already in progress. Cancel it before starting another.'
+    });
+    return;
+  }
 
-  // Run the Ruby script to convert the video
+  const scriptPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'video2gif.rb')
+    : path.join(__dirname, 'video2gif.rb');
+  const scriptCwd = app.isPackaged ? process.resourcesPath : __dirname;
+
+  // `detached: true` puts Ruby in its own process group. ffmpeg children
+  // inherit that group, so a single `process.kill(-pid)` on cancel takes
+  // the whole tree down instead of orphaning ffmpeg.
   const rubyProcess = spawn('ruby', [scriptPath, videoPath], {
-    cwd: __dirname
+    cwd: scriptCwd,
+    detached: process.platform !== 'win32'
   });
-  
+
+  activeConversion = { process: rubyProcess, cancelled: false };
+
   let stdoutData = '';
   let stderrData = '';
-  
+  // The Ruby script encodes the three versions in parallel and prints each
+  // version's block (header + result) atomically on completion. So we just
+  // count completion markers for overall progress.
+  const VERSIONS = ['tiny', 'small', 'medium'];
+  let completedCount = 0;
+
   rubyProcess.stdout.on('data', (data) => {
     const dataStr = data.toString();
     stdoutData += dataStr;
-    
-    // Check if the output indicates which version is being encoded
-    const versionMatch = dataStr.match(/Creating (tiny|small|medium) version:/);
-    if (versionMatch) {
-      const currentVersion = versionMatch[1];
-      event.sender.send('conversion-version', { version: currentVersion });
+
+    // Announce each version as soon as Ruby flushes its block. Ordering
+    // depends on which thread finishes first; the UI just shows the latest.
+    const versionStartMatch = dataStr.match(/Creating (tiny|small|medium) version:/);
+    if (versionStartMatch) {
+      event.sender.send('conversion-version', { version: versionStartMatch[1] });
     }
-    
+
+    // Each successful version dump ends with "✅ X version complete!".
+    const completions = dataStr.match(/✅ (?:tiny|small|medium) version complete!/g);
+    if (completions) {
+      completedCount += completions.length;
+      const overallPct = Math.round((completedCount / VERSIONS.length) * 100);
+      event.sender.send('conversion-progress-pct', {
+        version: 'parallel',
+        versionPct: overallPct,
+        overallPct
+      });
+    }
+
     event.sender.send('conversion-progress', { type: 'stdout', data: dataStr });
   });
-  
+
   rubyProcess.stderr.on('data', (data) => {
-    stderrData += data.toString();
-    event.sender.send('conversion-progress', { type: 'stderr', data: data.toString() });
+    const dataStr = data.toString();
+    stderrData += dataStr;
+    event.sender.send('conversion-progress', { type: 'stderr', data: dataStr });
+    // Per-version ffmpeg "time=" parsing is intentionally dropped here:
+    // three ffmpegs now run concurrently and we can't reliably attribute
+    // a given progress line to a specific version. Overall progress is
+    // driven by completion-marker counting on stdout instead.
   });
 
   rubyProcess.on('error', (error) => {
+    activeConversion = null;
     event.sender.send('conversion-complete', {
       success: false,
       error: `Failed to start Ruby conversion process: ${error.message}`
     });
   });
-  
-  rubyProcess.on('close', (code) => {
+
+  rubyProcess.on('close', (code, signal) => {
+    const wasCancelled = activeConversion && activeConversion.cancelled;
+    activeConversion = null;
+
+    if (wasCancelled) {
+      event.sender.send('conversion-complete', {
+        success: false,
+        cancelled: true,
+        error: 'Conversion cancelled.'
+      });
+      return;
+    }
+
     if (code === 0) {
       // Get metadata about the original video and the GIF versions
       const originalSize = fs.statSync(videoPath).size;
@@ -147,6 +278,34 @@ ipcMain.on('convert-video', (event, videoPath) => {
   });
 });
 
+// Cancel an in-flight conversion. Kills Ruby and its ffmpeg children.
+ipcMain.on('cancel-conversion', () => {
+  if (!activeConversion) return;
+  activeConversion.cancelled = true;
+  const child = activeConversion.process;
+  const pid = child.pid;
+
+  try {
+    if (process.platform === 'win32') {
+      // On Windows, /T kills the whole tree.
+      spawn('taskkill', ['/pid', String(pid), '/f', '/t']);
+    } else {
+      // We spawned Ruby with detached:true, so -pid targets the process group.
+      process.kill(-pid, 'SIGTERM');
+    }
+  } catch (err) {
+    // Process may have already exited between cancel click and kill.
+  }
+
+  // Escalate to SIGKILL if the tree didn't exit within 2s.
+  setTimeout(() => {
+    if (!activeConversion) return;
+    try {
+      if (process.platform !== 'win32') process.kill(-pid, 'SIGKILL');
+    } catch (err) { /* already gone */ }
+  }, 2000);
+});
+
 // Open file dialog to select a video
 ipcMain.handle('open-file-dialog', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -155,11 +314,34 @@ ipcMain.handle('open-file-dialog', async () => {
       { name: 'Videos', extensions: ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', '3gp', 'mpg', 'mpeg'] }
     ]
   });
-  
+
   if (!result.canceled && result.filePaths.length > 0) {
     return result.filePaths[0];
   }
   return null;
+});
+
+// Minimal filesystem helpers exposed to the sandboxed renderer.
+ipcMain.handle('stat-file', async (_event, filePath) => {
+  try {
+    const stats = await fs.promises.stat(filePath);
+    return { size: stats.size, mtimeMs: stats.mtimeMs };
+  } catch (err) {
+    return { error: err.message };
+  }
+});
+
+ipcMain.handle('open-path', async (_event, p) => shell.openPath(p));
+ipcMain.handle('show-in-folder', async (_event, p) => { shell.showItemInFolder(p); });
+ipcMain.handle('path-to-file-url', async (_event, p) => pathToFileURL(p).href);
+
+// Open an external URL — restricted to http/https so a compromised renderer
+// can't ask main to open `file://` paths or custom-scheme handlers.
+ipcMain.handle('open-external', async (_event, url) => {
+  if (typeof url !== 'string') return false;
+  if (!/^https?:\/\//i.test(url)) return false;
+  await shell.openExternal(url);
+  return true;
 });
 
 // Extract metadata from the Ruby script output

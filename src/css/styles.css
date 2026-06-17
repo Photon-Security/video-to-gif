@@ -465,6 +465,33 @@ footer a:hover {
   text-decoration: underline;
 }
 
+.donate-line {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.donate-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background-color: #ff5e5b;
+  color: white !important;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none !important;
+  transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+.donate-btn:hover {
+  background-color: #e54845;
+  transform: translateY(-1px);
+}
+
 .hidden {
   display: none;
 }

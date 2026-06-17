@@ -1,7 +1,8 @@
-// Import required modules
-const { ipcRenderer, shell } = require('electron');
-const path = require('path');
-const fs = require('fs');
+// All Node access is funnelled through window.api (see preload.js).
+// The renderer itself runs with nodeIntegration:false + sandbox:true.
+// Note: `window.api` is also auto-exposed as the global `api` identifier in
+// Chromium script scope, so declaring `const api = window.api` would throw
+// "Identifier 'api' has already been declared" and abort the whole script.
 
 // DOM Elements
 const dropArea = document.getElementById('drop-area');
@@ -98,8 +99,6 @@ let currentGifVersions = {
   small: null,
   medium: null
 };
-let conversionProcess = null;
-let currentVersion = null;
 
 // Event listeners for drag and drop
 ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
@@ -133,53 +132,62 @@ dropArea.addEventListener('drop', handleDrop, false);
 function handleDrop(e) {
   const dt = e.dataTransfer;
   const files = dt.files;
-  
+
   if (files.length > 0) {
-    handleFile(files[0].path);
+    const filePath = api.getPathForFile(files[0]);
+    if (filePath) handleFile(filePath);
   }
 }
 
 // Handle file selection via button
 selectFileBtn.addEventListener('click', async () => {
-  const filePath = await ipcRenderer.invoke('open-file-dialog');
+  const filePath = await api.openFileDialog();
+  if (filePath) {
+    handleFile(filePath);
+  }
+});
+
+// Handle files opened via the OS (drag onto .app icon, "Open With…",
+// or `open foo.mp4 -a "Video to GIF"`).
+api.onFileOpened((filePath) => {
   if (filePath) {
     handleFile(filePath);
   }
 });
 
 // Handle the selected file
-function handleFile(filePath) {
+async function handleFile(filePath) {
   // Check if it's a video file
-  const supportedExtensions = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.mpg', '.mpeg'];
-  const ext = path.extname(filePath).toLowerCase();
-  
-  if (!supportedExtensions.includes(ext)) {
+  if (!api.isSupportedVideo(filePath)) {
+    const ext = api.extname(filePath);
     showError('Unsupported file type', `The file you selected (${ext}) is not a supported video format. Please select a video file.`);
     return;
   }
-  
+
   currentVideoPath = filePath;
-  
+
   // Show conversion panel
   dropArea.classList.add('hidden');
   conversionPanel.classList.remove('hidden');
   resultPanel.classList.add('hidden');
   errorPanel.classList.add('hidden');
-  
+
   // Update file info
-  fileName.textContent = path.basename(filePath);
-  const stats = fs.statSync(filePath);
-  fileSize.textContent = formatSize(stats.size);
-  
-  // Load video preview
-  videoPreview.src = filePath;
+  fileName.textContent = api.basename(filePath);
+  const stats = await api.statFile(filePath);
+  if (stats && !stats.error) {
+    fileSize.textContent = formatSize(stats.size);
+  }
+
+  // Load video preview (use file:// URL so spaces/non-ASCII paths work).
+  videoPreview.src = await api.pathToFileURL(filePath);
   videoPreview.onloadedmetadata = () => {
     fileDuration.textContent = formatDuration(videoPreview.duration);
   };
-  
+
   // Clear console
   consoleContent.textContent = '';
-  
+
   // Start conversion
   startConversion(filePath);
 }
@@ -210,51 +218,35 @@ function startConversion(videoPath) {
   // Reset progress
   progressFill.style.width = '0%';
   progressText.textContent = 'Processing...';
-  
+
   // Send to main process
-  ipcRenderer.send('convert-video', videoPath);
+  api.startConversion(videoPath);
 }
 
 // Listen for conversion progress
-ipcRenderer.on('conversion-progress', (event, data) => {
+api.onConversionProgress((data) => {
   // Update console output
   consoleContent.textContent += data.data;
   consoleContent.scrollTop = consoleContent.scrollHeight;
-  
-  // Update progress based on output
-  updateProgressFromOutput(data.data);
 });
 
-// Update progress based on ffmpeg output
-function updateProgressFromOutput(output) {
-  // Look for frame=X patterns to estimate progress
-  const frameMatch = output.match(/frame=\s*(\d+)/);
-  if (frameMatch) {
-    const frame = parseInt(frameMatch[1]);
-    // Assuming average video is around 180 frames (60 seconds at 3 fps)
-    const estimatedProgress = Math.min(Math.round((frame / 180) * 100), 95);
-    progressFill.style.width = `${estimatedProgress}%`;
-    
-    // Show which version is being processed
-    if (currentVersion) {
-      progressText.textContent = `Processing ${currentVersion} version... ${estimatedProgress}%`;
-    } else {
-      progressText.textContent = `Processing... ${estimatedProgress}%`;
-    }
+// Accurate ffmpeg-derived progress (overall + per-version).
+api.onConversionProgressPct((data) => {
+  progressFill.style.width = `${data.overallPct}%`;
+  if (data.version === 'parallel') {
+    progressText.textContent = `Encoding 3 versions in parallel... ${data.overallPct}%`;
+  } else {
+    progressText.textContent = `Processing ${data.version} version... ${data.versionPct}% (overall ${data.overallPct}%)`;
   }
-}
+});
 
 // Listen for version updates
-ipcRenderer.on('conversion-version', (event, data) => {
-  currentVersion = data.version;
-  progressText.textContent = `Processing ${currentVersion} version...`;
-  
-  // Reset progress for new version
-  progressFill.style.width = '0%';
+api.onConversionVersion((data) => {
+  progressText.textContent = `${data.version} version finished`;
 });
 
 // Listen for conversion complete
-ipcRenderer.on('conversion-complete', (event, result) => {
+api.onConversionComplete(async (result) => {
   if (result.success) {
     // Store paths to GIF versions
     currentGifVersions = {
@@ -262,28 +254,37 @@ ipcRenderer.on('conversion-complete', (event, result) => {
       small: result.versions.small.path,
       medium: result.versions.medium.path
     };
-    
+
+    // Resolve all file:// URLs before swapping the panel so spaces / non-ASCII
+    // characters in the original path don't break <img>/<video> sources.
+    const urls = {
+      original: await api.pathToFileURL(result.originalPath),
+      tiny: await api.pathToFileURL(result.versions.tiny.path),
+      small: await api.pathToFileURL(result.versions.small.path),
+      medium: await api.pathToFileURL(result.versions.medium.path)
+    };
+
     // Update progress
     progressFill.style.width = '100%';
     progressText.textContent = 'Conversion Complete!';
-    
+
     // Show result panel
     setTimeout(() => {
       conversionPanel.classList.add('hidden');
       resultPanel.classList.remove('hidden');
-      
+
       // Update original video info
-      originalPreview.src = result.originalPath;
+      originalPreview.src = urls.original;
       originalSizeEl.textContent = formatSize(result.originalSize);
       originalSizeChart.textContent = formatSize(result.originalSize);
       originalDimensions.textContent = result.metadata.dimensions.original || 'N/A';
-      
+
       // Set original size as 100% for the chart
       const maxSize = result.originalSize;
-      
+
       // Update tiny version info
-      tinyPreview.src = result.versions.tiny.path;
-      tinyPreviewLarge.src = result.versions.tiny.path;
+      tinyPreview.src = urls.tiny;
+      tinyPreviewLarge.src = urls.tiny;
       tinySize.textContent = formatSize(result.versions.tiny.size);
       tinySizeDetail.textContent = formatSize(result.versions.tiny.size);
       tinyReduction.textContent = `${result.versions.tiny.reduction}%`;
@@ -295,10 +296,10 @@ ipcRenderer.on('conversion-complete', (event, result) => {
       tinyDitherMethod.textContent = result.metadata.ditherMethod.tiny || 'N/A';
       tinyPath.textContent = result.versions.tiny.path;
       originalSizeTiny.textContent = formatSize(result.originalSize);
-      
+
       // Update small version info
-      smallPreview.src = result.versions.small.path;
-      smallPreviewLarge.src = result.versions.small.path;
+      smallPreview.src = urls.small;
+      smallPreviewLarge.src = urls.small;
       smallSize.textContent = formatSize(result.versions.small.size);
       smallSizeDetail.textContent = formatSize(result.versions.small.size);
       smallReduction.textContent = `${result.versions.small.reduction}%`;
@@ -310,10 +311,10 @@ ipcRenderer.on('conversion-complete', (event, result) => {
       smallDitherMethod.textContent = result.metadata.ditherMethod.small || 'N/A';
       smallPath.textContent = result.versions.small.path;
       originalSizeSmall.textContent = formatSize(result.originalSize);
-      
+
       // Update medium version info
-      mediumPreview.src = result.versions.medium.path;
-      mediumPreviewLarge.src = result.versions.medium.path;
+      mediumPreview.src = urls.medium;
+      mediumPreviewLarge.src = urls.medium;
       mediumSize.textContent = formatSize(result.versions.medium.size);
       mediumSizeDetail.textContent = formatSize(result.versions.medium.size);
       mediumReduction.textContent = `${result.versions.medium.reduction}%`;
@@ -336,6 +337,8 @@ ipcRenderer.on('conversion-complete', (event, result) => {
         mediumSizeChart.textContent = formatSize(result.versions.medium.size);
       }, 500);
     }, 1000);
+  } else if (result.cancelled) {
+    resetUI();
   } else {
     showError('Conversion Failed', result.error);
   }
@@ -352,10 +355,11 @@ function showError(title, details) {
   errorDetails.textContent = details;
 }
 
-// Cancel button
+// Cancel button — kills the running Ruby + ffmpeg processes.
 cancelBtn.addEventListener('click', () => {
-  // TODO: Implement cancellation of the conversion process
-  resetUI();
+  api.cancelConversion();
+  // The main process will reply with conversion-complete{cancelled:true},
+  // which resets the UI via showError/resetUI handling below.
 });
 
 // New conversion button
@@ -405,46 +409,44 @@ tabButtons.forEach(button => {
 
 // Open GIF buttons
 openTinyBtn.addEventListener('click', () => {
-  if (currentGifVersions.tiny) {
-    shell.openPath(currentGifVersions.tiny);
-  }
+  if (currentGifVersions.tiny) api.openPath(currentGifVersions.tiny);
 });
 
 openSmallBtn.addEventListener('click', () => {
-  if (currentGifVersions.small) {
-    shell.openPath(currentGifVersions.small);
-  }
+  if (currentGifVersions.small) api.openPath(currentGifVersions.small);
 });
 
 openMediumBtn.addEventListener('click', () => {
-  if (currentGifVersions.medium) {
-    shell.openPath(currentGifVersions.medium);
-  }
+  if (currentGifVersions.medium) api.openPath(currentGifVersions.medium);
 });
 
 // Open folder buttons
 openTinyFolderBtn.addEventListener('click', () => {
-  if (currentGifVersions.tiny) {
-    shell.showItemInFolder(currentGifVersions.tiny);
-  }
+  if (currentGifVersions.tiny) api.showItemInFolder(currentGifVersions.tiny);
 });
 
 openSmallFolderBtn.addEventListener('click', () => {
-  if (currentGifVersions.small) {
-    shell.showItemInFolder(currentGifVersions.small);
-  }
+  if (currentGifVersions.small) api.showItemInFolder(currentGifVersions.small);
 });
 
 openMediumFolderBtn.addEventListener('click', () => {
-  if (currentGifVersions.medium) {
-    shell.showItemInFolder(currentGifVersions.medium);
-  }
+  if (currentGifVersions.medium) api.showItemInFolder(currentGifVersions.medium);
 });
 
 // Initialize the UI
 document.addEventListener('DOMContentLoaded', () => {
   resetUI();
-  
+
   // Set initial tab
   tabButtons[0].click();
+
+  // Route all <a data-external> links through the bridged opener so they
+  // open in the user's default browser instead of trying to navigate the
+  // Electron window.
+  document.querySelectorAll('a[data-external]').forEach((a) => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      api.openExternal(a.href);
+    });
+  });
 });
