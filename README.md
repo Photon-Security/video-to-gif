@@ -29,7 +29,13 @@ Developed by Florian Bidabe / Photon Security ([www.photonsec.com.au](https://ww
 
 Download the latest `Video to GIF-<version>-arm64.dmg` (Apple Silicon) or `.zip` from the [Releases page](https://github.com/Photon-Security/video-to-gif/releases/latest), open it, and drag **Video to GIF.app** into `/Applications`.
 
-> The app is **not** code-signed. The first time you open it, macOS will warn that the developer can't be verified. Right-click the app → **Open** → **Open**, or run `xattr -dr com.apple.quarantine "/Applications/Video to GIF.app"`.
+> The app is signed ad-hoc but **not** notarized with Apple. On first launch macOS will say *"Video to GIF cannot be opened because the developer cannot be verified."* This is expected — click **Cancel**, then open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to the Video to GIF entry. After that it launches normally.
+>
+> One-liner alternative if you'd rather not click through the dialog:
+> ```bash
+> xattr -dr com.apple.quarantine "/Applications/Video to GIF.app"
+> ```
+> Older guides suggest *right-click → Open*. On macOS Sequoia (15.x) and later that no longer bypasses Gatekeeper for unsigned apps — use one of the two methods above.
 
 ### Prerequisites (installed at first launch)
 

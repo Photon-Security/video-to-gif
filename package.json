@@ -27,6 +27,7 @@
   "build": {
     "appId": "com.photonsec.video-to-gif",
     "productName": "Video to GIF",
+    "afterPack": "build/after-pack.js",
     "files": [
       "main.js",
       "preload.js",
@@ -47,6 +48,8 @@
     "mac": {
       "category": "public.app-category.video",
       "icon": "assets/icons/AppIcon.icns",
+      "identity": null,
+      "gatekeeperAssess": false,
       "target": [
         {
           "target": "dmg",
