@@ -73,3 +73,6 @@ temp/
 
 # Icon build intermediates
 AppIcon.iconset/
+
+# Local-only docs (not for the public repo)
+AGENTS.md
