@@ -55,7 +55,7 @@ If this tool saved you time, consider buying me a coffee on Ko-fi: **[ko-fi.com/
 
 ## Developers
 
-Looking to run it from the command line, build from source, or change conversion presets? See [CLI_README.md](CLI_README.md).
+Looking to run it from the command line, build from source, or change conversion presets? See [docs/CLI_README.md](docs/CLI_README.md).
 
 ## License
 

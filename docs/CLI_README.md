@@ -1,6 +1,6 @@
 # CLI & Developer Guide
 
-Everything in this file is for people who want to run the converter from the command line, build the app from source, or change the output presets. End users should stick with the DMG — see the main [README.md](README.md).
+Everything in this file is for people who want to run the converter from the command line, build the app from source, or change the output presets. End users should stick with the DMG — see the main [README.md](../README.md).
 
 ## Run the Ruby script directly
 
