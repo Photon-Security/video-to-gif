@@ -2,9 +2,9 @@
   <img src="assets/Logo.png" alt="Video to GIF logo" width="260" />
 </p>
 
-# 🎬 Video to GIF Converter
+# Video to GIF Converter
 
-A desktop app that converts any video (MP4, MKV, AVI, MOV, WMV, …) into three optimised GIFs — tiny, small, and medium — using FFmpeg. Ships as a native macOS `.app` with a polished UI, or runs as a CLI Ruby script.
+Convert any video into three optimised GIFs — small, medium, and large — without leaving your Mac. A native `.app` with drag-and-drop, parallel encoding, and a side-by-side comparison of every output.
 
 Developed by Florian Bidabe / Photon Security ([www.photonsec.com.au](https://www.photonsec.com.au))
 
@@ -13,124 +13,51 @@ Developed by Florian Bidabe / Photon Security ([www.photonsec.com.au](https://ww
 
 ![Demo](assets/media/demo.gif)
 
-## ✨ Features
+## Install
 
-- 🖱️ **Drag-and-drop** any video, or drop it onto the `.app` icon in the Dock
-- ⚡ **Parallel encoding** — all three versions are produced concurrently (≈3× faster on multi-core)
-- 🎭 **Three preset outputs** for different use cases:
-  - **Tiny** — 640px max, 2 fps, 128 colours (smallest)
-  - **Small** — 1280px max, 2 fps, 160 colours (balanced)
-  - **Medium** — up to 1980px, 3 fps, 256 colours (highest quality)
-- 📊 Visual side-by-side comparison with size-reduction chart
-- ⏹️ **Cancel** mid-conversion — kills the whole ffmpeg tree, no orphans
-- 🔒 Hardened Electron: `nodeIntegration:false`, `contextIsolation:true`, sandboxed renderer, narrow `contextBridge` IPC surface
-- 🪟 **Single-instance** — relaunching focuses the existing window instead of stacking duplicates
-- 💻 macOS, Linux, Windows
+1. Download the latest DMG from the [Releases page](https://github.com/Photon-Security/video-to-gif/releases/latest):
+   - `Video to GIF-<version>-arm64.dmg` for Apple Silicon
+   - `Video to GIF-<version>-x64.dmg` for Intel
+2. Open the DMG and drag **Video to GIF.app** into your `/Applications` folder.
+3. Install [FFmpeg](https://ffmpeg.org/download.html) if you don't already have it. On macOS the easiest way is:
+   ```bash
+   brew install ffmpeg
+   ```
 
-## 📥 Install
+### First launch — allow the app
 
-### macOS (recommended)
+The app is signed but not notarized with Apple, so macOS will block it the first time. You'll see:
 
-Download the latest DMG from the [Releases page](https://github.com/Photon-Security/video-to-gif/releases/latest) — `Video to GIF-<version>-arm64.dmg` for Apple Silicon, `-x64.dmg` for Intel — open it, and drag **Video to GIF.app** into `/Applications`.
+> *"Video to GIF cannot be opened because the developer cannot be verified."*
 
-> The app is signed ad-hoc but **not** notarized with Apple. On first launch macOS will say *"Video to GIF cannot be opened because the developer cannot be verified."* This is expected — click **Cancel**, then open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to the Video to GIF entry. After that it launches normally.
->
-> One-liner alternative if you'd rather not click through the dialog:
-> ```bash
-> xattr -dr com.apple.quarantine "/Applications/Video to GIF.app"
-> ```
-> Older guides suggest *right-click → Open*. On macOS Sequoia (15.x) and later that no longer bypasses Gatekeeper for unsigned apps — use one of the two methods above.
+Click **Cancel**, then open **System Settings → Privacy & Security**, scroll to the bottom, and click **Open Anyway** next to the Video to GIF entry. After that it launches normally.
 
-### Prerequisites (installed at first launch)
-
-- **FFmpeg** — `brew install ffmpeg` (macOS), `apt install ffmpeg` (Linux), or [ffmpeg.org](https://ffmpeg.org/download.html) (Windows)
-- **Ruby** — system Ruby on macOS is fine; otherwise `brew install ruby` / `apt install ruby` / [rubyinstaller.org](https://rubyinstaller.org/)
-
-### Build from source
+If you'd rather skip the dialog entirely, run this once in Terminal:
 
 ```bash
-git clone https://github.com/Photon-Security/video-to-gif.git
-cd video-to-gif
-npm install
-npm start              # run in dev
-npm run dist:mac       # build .dmg + .zip into dist/
+xattr -dr com.apple.quarantine "/Applications/Video to GIF.app"
 ```
 
-## 🖥️ Usage
+## Use
 
-### GUI
+Drag a video onto the window (or click **Select Video**). The app produces three GIFs side by side and shows the size reduction for each. Open the one you want or reveal it in Finder with the buttons under the preview.
 
-```bash
-npm start              # production-style run
-npm run dev            # opens DevTools, live-reload
-```
+## Features
 
-Drag a video into the drop zone or click **Select Video**. You'll see real-time progress as the three encodes run in parallel, then a comparison panel with thumbnails, size reductions, and per-version metadata.
+- Drag-and-drop any common video format (MP4, MOV, MKV, AVI, WebM, …)
+- Three output sizes generated in parallel — small, medium, large
+- Side-by-side preview with file size and reduction percentage
+- Cancel at any time during conversion
 
-### CLI
+## Support
 
-```bash
-ruby video2gif.rb path/to/video.mp4   # one file
-ruby video2gif.rb                     # every video in the cwd
-```
+If this tool saved you time, consider buying me a coffee on Ko-fi: **[ko-fi.com/enelass](https://ko-fi.com/enelass)**
 
-Outputs land next to the input as `<name>-tiny.gif`, `<name>-small.gif`, `<name>-medium.gif`.
+## Developers
 
-## 🛠️ Configuration
+Looking to run it from the command line, build from source, or change conversion presets? See [CLI_README.md](CLI_README.md).
 
-Edit `config.json` to change the per-version FFmpeg parameters:
-
-```json
-{
-  "versions": {
-    "tiny":   { "max_width": 640,  "fps": 2, "color_depth": 128, "dither_method": "bayer" },
-    "small":  { "max_width": 1280, "fps": 2, "color_depth": 160, "dither_method": "sierra2_4a" },
-    "medium": { "max_width": 1980, "fps": 3, "color_depth": 256, "dither_method": "sierra2_4a" }
-  },
-  "supported_video_extensions": [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".3gp", ".mpg", ".mpeg"]
-}
-```
-
-Available dither methods: `bayer`, `heckbert`, `floyd_steinberg`, `sierra2`, `sierra2_4a`.
-
-## 📝 Example output (CLI)
-
-```
-🎬 video2gif-ruby v1.0.0
-✅ FFmpeg found: /opt/homebrew/bin/ffmpeg
-🎬 Converting sample.MP4 to multiple GIF versions...
-  • Original size: 1848x1078
-
-  Creating tiny version:
-  • Size: 640x374
-  • FPS: 2
-  • Color depth: 128 colors
-  • Dither method: bayer
-  ✅ tiny version complete!
-    • Size: 410.45 KB (86.52% reduction)
-
-  Creating small version:
-  • Size: 1280x746
-  ✅ small version complete!
-    • Size: 1.35 MB (54.67% reduction)
-
-  Creating medium version:
-  • Size: 1848x1078
-  ✅ medium version complete!
-    • Size: 3.08 MB
-
-🎉 Conversion completed!
-```
-
-Versions encode in parallel; their stdout blocks are emitted atomically as each one finishes, so ordering reflects completion order rather than start order.
-
-## 💖 Support
-
-If this tool saved you time, consider buying me a coffee on Ko-fi: **[ko-fi.com/enelass](https://ko-fi.com/enelass)** ☕
-
-It keeps the project alive and motivates new features.
-
-## 📄 License
+## License
 
 MIT
 
