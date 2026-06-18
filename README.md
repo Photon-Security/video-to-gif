@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/Logo.png" alt="Video to GIF logo" width="260" />
+</p>
+
 # 🎬 Video to GIF Converter
 
 A desktop app that converts any video (MP4, MKV, AVI, MOV, WMV, …) into three optimised GIFs — tiny, small, and medium — using FFmpeg. Ships as a native macOS `.app` with a polished UI, or runs as a CLI Ruby script.
@@ -129,3 +133,9 @@ It keeps the project alive and motivates new features.
 ## 📄 License
 
 MIT
+
+---
+
+<p align="center">
+  <img src="assets/Banner.png" alt="Photon Security banner" />
+</p>
