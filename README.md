@@ -2,6 +2,7 @@
   <img src="assets/Logo.png" alt="Video to GIF logo" width="260" />
 </p>
 
+
 # Video to GIF Converter
 
 Convert any video into three optimised GIFs — small, medium, and large — without leaving your Mac. A native `.app` with drag-and-drop, parallel encoding, and a side-by-side comparison of every output.
