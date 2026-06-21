@@ -149,11 +149,24 @@ ipcMain.on('convert-video', (event, videoPath) => {
     : path.join(__dirname, 'video2gif.rb');
   const scriptCwd = app.isPackaged ? process.resourcesPath : __dirname;
 
+  // When launched from Finder/Dock, macOS gives the .app a minimal PATH
+  // (/usr/bin:/bin:/usr/sbin:/sbin). Homebrew installs (ffmpeg, ruby, etc.)
+  // live in /opt/homebrew/bin (Apple Silicon) or /usr/local/bin (Intel) and
+  // aren't visible there — so `which ffmpeg` in the Ruby script fails.
+  // Prepend the common Homebrew prefixes so the child process can find them.
+  const childEnv = { ...process.env };
+  if (process.platform === 'darwin') {
+    const extra = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/local/sbin'];
+    const current = (childEnv.PATH || '').split(':').filter(Boolean);
+    childEnv.PATH = [...extra, ...current].filter((p, i, a) => a.indexOf(p) === i).join(':');
+  }
+
   // `detached: true` puts Ruby in its own process group. ffmpeg children
   // inherit that group, so a single `process.kill(-pid)` on cancel takes
   // the whole tree down instead of orphaning ffmpeg.
   const rubyProcess = spawn('ruby', [scriptPath, videoPath], {
     cwd: scriptCwd,
+    env: childEnv,
     detached: process.platform !== 'win32'
   });
 
