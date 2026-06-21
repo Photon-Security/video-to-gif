@@ -134,22 +134,51 @@ class Video2Gif
   end
   
   def get_video_dimensions(video_path)
-    # argv-style invocation — no shell, no quoting hazards.
+    # Pull width, height, and display_aspect_ratio together. Some videos
+    # (especially screen recordings and anamorphic content) store non-square
+    # pixels — width x height is the storage size but the *intended* shape
+    # is given by display_aspect_ratio. If we ignore DAR the GIF comes out
+    # squished or stretched compared to what the user saw on playback.
     stdout, _stderr, status = Open3.capture3(
       'ffprobe', '-v', 'error',
       '-select_streams', 'v:0',
-      '-show_entries', 'stream=width,height',
-      '-of', 'csv=s=x:p=0',
+      '-show_entries', 'stream=width,height,display_aspect_ratio',
+      '-of', 'csv=s=,:p=0',
       video_path
     )
 
-    if status.success? && stdout.strip =~ /(\d+)x(\d+)/
-      width, height = $1.to_i, $2.to_i
-      return [width, height]
-    else
+    unless status.success?
       puts "⚠️ Warning: Could not determine dimensions for #{File.basename(video_path)}"
       return [0, 0]
     end
+
+    # csv output looks like: "1920,1080,211:94"  (DAR optional / may be "N/A")
+    parts = stdout.strip.split(',')
+    width  = parts[0].to_i
+    height = parts[1].to_i
+    dar    = parts[2]
+
+    return [0, 0] if width.zero? || height.zero?
+
+    # If we have a usable DAR and it disagrees with the storage ratio,
+    # treat the DAR as authoritative — adjust width so width/height matches
+    # the intended display ratio. (Height stays put; widening or narrowing
+    # is the conventional fix and avoids losing vertical detail.)
+    if dar && dar =~ /\A(\d+):(\d+)\z/
+      dar_num, dar_den = $1.to_f, $2.to_f
+      if dar_num > 0 && dar_den > 0
+        dar_ratio    = dar_num / dar_den
+        pixel_ratio  = width.to_f / height.to_f
+        # Only correct when the difference is meaningful (>0.5%) to avoid
+        # rounding noise on already-square-pixel sources.
+        if (dar_ratio - pixel_ratio).abs / pixel_ratio > 0.005
+          width = (height * dar_ratio).round
+          width += 1 if width.odd?  # keep even — some codecs require it
+        end
+      end
+    end
+
+    [width, height]
   end
   
   def calculate_new_dimensions(width, height)
