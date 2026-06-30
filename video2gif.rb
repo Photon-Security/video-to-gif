@@ -1,4 +1,5 @@
 #!/usr/bin/env ruby
+# encoding: UTF-8
 # video2gif.rb - Convert video files to optimized GIFs using FFmpeg
 
 require 'fileutils'
@@ -10,14 +11,46 @@ class Video2Gif
   AUTHOR = 'Florian Bidabe / Photon Security (www.photonsec.com.au)'
   
   def initialize(directory = '.', config_file = 'config.json')
-    @directory = directory
+    @directory = normalize_filesystem_path(directory)
     load_config(config_file)
     check_ffmpeg
     puts "\033[1;35m🎬 video2gif-ruby v#{VERSION}\033[0m"
     puts "Developed by #{AUTHOR}"
   end
+
+  def normalize_filesystem_path(path)
+    path = path.to_s
+    return path if path.encoding == Encoding::UTF_8 && path.valid_encoding?
+
+    utf8_path = path.dup.force_encoding(Encoding::UTF_8)
+    utf8_path.valid_encoding? ? utf8_path : path
+  end
+
+  def utf8_text(value)
+    text = value.to_s
+    return text if text.encoding == Encoding::UTF_8 && text.valid_encoding?
+
+    if text.encoding == Encoding::ASCII_8BIT
+      utf8_text = text.dup.force_encoding(Encoding::UTF_8)
+      return utf8_text if utf8_text.valid_encoding?
+
+      return utf8_text.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: '?')
+    end
+
+    text.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: '?')
+  end
+
+  def display_path(path)
+    utf8_text(path)
+  end
+
+  def display_basename(path)
+    display_path(File.basename(path))
+  end
   
   def load_config(config_file)
+    config_file = normalize_filesystem_path(config_file)
+
     if File.exist?(config_file)
       config = JSON.parse(File.read(config_file))
       
@@ -61,7 +94,7 @@ class Video2Gif
       end
       
       @video_extensions = config['supported_video_extensions'] || %w[.mp4 .mkv .avi .mov .wmv .flv .webm .m4v .3gp .mpg .mpeg]
-      puts "✅ Loaded configuration from #{config_file}"
+      puts "✅ Loaded configuration from #{display_path(config_file)}"
     else
       # Default settings if config file doesn't exist
       @max_width = 1980
@@ -109,7 +142,7 @@ class Video2Gif
       exit 1
     end
     
-    puts "✅ FFmpeg found: #{stdout.strip}"
+    puts "✅ FFmpeg found: #{utf8_text(stdout.strip)}"
   end
   
   def scan_videos
@@ -123,17 +156,19 @@ class Video2Gif
     end
     
     if videos.empty?
-      puts "❌ No supported video files found in #{@directory}"
+      puts "❌ No supported video files found in #{display_path(@directory)}"
       exit 0
     end
     
     puts "🔍 Found #{videos.size} video file(s):"
-    videos.each { |v| puts "  • #{File.basename(v)}" }
+    videos.each { |v| puts "  • #{display_basename(v)}" }
     
     videos
   end
   
   def get_video_dimensions(video_path)
+    video_path = normalize_filesystem_path(video_path)
+
     # Pull width, height, and display_aspect_ratio together. Some videos
     # (especially screen recordings and anamorphic content) store non-square
     # pixels — width x height is the storage size but the *intended* shape
@@ -148,7 +183,7 @@ class Video2Gif
     )
 
     unless status.success?
-      puts "⚠️ Warning: Could not determine dimensions for #{File.basename(video_path)}"
+      puts "⚠️ Warning: Could not determine dimensions for #{display_basename(video_path)}"
       return [0, 0]
     end
 
@@ -195,10 +230,12 @@ class Video2Gif
   end
   
   def convert_to_gif(video_path)
+    video_path = normalize_filesystem_path(video_path)
+
     # Get video dimensions
     width, height = get_video_dimensions(video_path)
 
-    puts "\n🎬 Converting #{File.basename(video_path)} to multiple GIF versions..."
+    puts "\n🎬 Converting #{display_basename(video_path)} to multiple GIF versions..."
     puts "  • Original size: #{width}x#{height}" if width > 0
 
     # Determine medium size based on original width
@@ -275,9 +312,10 @@ class Video2Gif
   # renderer can match "Creating X version: ... • Size: ..." reliably even
   # when threads race.
   def encode_version(video_path, width, height, version, output_mutex)
+    video_path = normalize_filesystem_path(video_path)
     output_path = video_path.sub(/\.[^.]+$/, "-#{version[:name]}.gif")
     new_width, new_height = calculate_custom_dimensions(width, height, version[:max_width])
-    palette_path = "#{File.dirname(video_path)}/palette-#{version[:name]}.png"
+    palette_path = File.join(File.dirname(video_path), "palette-#{version[:name]}.png")
 
     # Build commands as arg arrays so no shell is involved and filenames with
     # spaces, quotes, or `$()` can't break out into the shell.
@@ -305,7 +343,7 @@ class Video2Gif
 
         puts "  ✅ #{version[:name]} version complete!"
         puts "    • Size: #{format_size(gif_size)} (#{size_reduction}% reduction)"
-        puts "    • Saved to: #{output_path}"
+        puts "    • Saved to: #{display_path(output_path)}"
         $stdout.flush
 
         return {
@@ -364,7 +402,7 @@ class Video2Gif
     
     # If a specific file is provided as an argument, only convert that file
     if ARGV.length > 0 && File.exist?(ARGV[0])
-      results << convert_to_gif(ARGV[0])
+      results << convert_to_gif(normalize_filesystem_path(ARGV[0]))
       puts "\n🎉 Conversion completed!"
     else
       videos = scan_videos
@@ -379,7 +417,7 @@ class Video2Gif
     puts "\n📊 Size Comparison:"
     results.each_with_index do |result, index|
       original_size = result["original"]["size"]
-      puts "Video #{index + 1}: #{File.basename(result["original"]["path"])}"
+      puts "Video #{index + 1}: #{display_basename(result["original"]["path"])}"
       puts "  • Original: #{format_size(original_size)} (#{result["original"]["dimensions"]})"
       
       result["versions"].each do |version|

@@ -1,6 +1,6 @@
 {
   "name": "video-to-gif",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "A Ruby script that converts any video file (MP4, MKV, AVI, MOV, WMV, etc.) to an optimized, lightweight GIF using FFmpeg.",
   "main": "main.js",
   "scripts": {

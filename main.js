@@ -159,6 +159,14 @@ ipcMain.on('convert-video', (event, videoPath) => {
     const extra = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/local/sbin'];
     const current = (childEnv.PATH || '').split(':').filter(Boolean);
     childEnv.PATH = [...extra, ...current].filter((p, i, a) => a.indexOf(p) === i).join(':');
+
+    // Finder/Dock launches can also omit a UTF-8 locale. Ruby then marks
+    // non-ASCII argv paths as ASCII-8BIT, which breaks interpolation with
+    // the converter's UTF-8 status output.
+    const hasUtf8Locale = (value) => /utf-?8/i.test(value || '');
+    if (!hasUtf8Locale(childEnv.LANG)) childEnv.LANG = 'en_US.UTF-8';
+    if (!hasUtf8Locale(childEnv.LC_CTYPE)) childEnv.LC_CTYPE = childEnv.LANG;
+    if (childEnv.LC_ALL && !hasUtf8Locale(childEnv.LC_ALL)) childEnv.LC_ALL = childEnv.LANG;
   }
 
   // `detached: true` puts Ruby in its own process group. ffmpeg children
